@@ -1,0 +1,15 @@
+name: PrimeRewardsApprover
+main: su.primecorp.primerewards.PrimeRewardsApproverPlugin
+version: 1.0.0
+api-version: '1.21'
+authors: [PRIMECORP]
+website: https://primecorp.su
+description: Issue rewards from external sources (donations, subscriptions) via MySQL with idempotent delivery.
+permissions:
+  primerewards.reload:
+    default: op
+commands:
+  primerewards:
+    description: PrimeRewardsApprover control
+    usage: /<command> reload|stats
+    aliases: [prewards, rewardsapprover]

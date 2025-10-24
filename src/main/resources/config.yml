@@ -1,0 +1,40 @@
+mysql:
+  jdbcUrl: "jdbc:mysql://127.0.0.1:3306/external_data?useSSL=false&serverTimezone=UTC&characterEncoding=utf8"
+  username: "user"
+  password: "pass"
+  minimumIdle: 1
+  maximumPoolSize: 5
+  connectionTimeoutMs: 5000
+  validationTimeoutMs: 3000
+
+polling:
+  intervalMs: 3000          # как часто опрашивать каждый источник
+  batchSize: 50             # размер порции SELECT ... LIMIT
+  maxConcurrentDeliveries: 4 # общий лимит параллельных выдач (Semaphore)
+  dbMaxRetries: 3           # ретраи SQL-операций
+  dbRetryBackoffMs: 300     # базовый backoff на ошибки БД
+
+backoff:
+  baseMs: 2000              # экспоненциальная задержка между повторами (в памяти)
+  maxMs: 120000             # верхний предел
+  jitterMs: 500             # случайный джиттер, чтобы избежать «стада»
+
+rateLimit:
+  qps: 20                   # общий QPS на выдачи (защита от шторма)
+
+logging:
+  level: "INFO"             # INFO|DEBUG
+
+# Маппинг tier -> список консольных команд.
+# Доступны плейсхолдеры: ${nickname}, ${amount}, ${currency}, ${order_id}, ${tier}, ${id}
+# Команды выполняются от имени консоли строго по порядку.
+tiers:
+  bronze:
+    - "eco give ${nickname} 100"
+    - "lp user ${nickname} parent addtemp donor_bronze 30d"
+  silver:
+    - "eco give ${nickname} 250"
+    - "lp user ${nickname} parent addtemp donor_silver 60d"
+  gold:
+    - "eco give ${nickname} 600"
+    - "lp user ${nickname} parent addtemp donor_gold 90d"
