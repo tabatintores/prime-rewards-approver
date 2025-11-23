@@ -1,0 +1,37 @@
+enabled: true
+
+mysql:
+  jdbcUrl: "jdbc:mysql://127.0.0.1:3306/external_data?useSSL=false&serverTimezone=UTC&characterEncoding=utf8"
+  username: "user"
+  password: "pass"
+  minimumIdle: 1
+  maximumPoolSize: 3
+  connectionTimeoutMs: 5000
+  validationTimeoutMs: 3000
+
+# Необязательно, но полезно: можно поставить реже, чем у orders (если захочешь — вынесем в общий диспетчер позже)
+polling:
+  batchSize: 50
+
+# Настраиваем команды ПОД телеграм-награды (свои tier'ы)
+tiers:
+  tg_join:
+    - "eco give ${nickname} 100"
+    - "lp user ${nickname} parent addtemp tg_member 30d"
+
+# Параметры таблицы Telegram (если структура другая — поменяешь тут)
+table:
+  name: "external_data.tg_subscriptions"
+  # критерий «готово к выдаче»
+  readyWhere: "is_subscribed=1 AND delivered_at IS NULL"
+  # колонки
+  columns:
+    id: "id"
+    nickname: "nickname"
+    tier: "tier"
+    amount: "reward_amount"      # если нет — можно не использовать, мы подставим 0
+    currency: "reward_currency"  # опционально
+    delivered_at: "delivered_at"
+    delivery_attempts: "delivery_attempts"
+    delivery_note: "delivery_note"
+    ordered_at: "subscribed_at"  # для сортировки

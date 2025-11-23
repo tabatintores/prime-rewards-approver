@@ -137,7 +137,7 @@ public final class Dispatcher {
                     tx.setAutoCommit(false);
                     try {
                         // execute reward actions
-                        executor.execute(item);
+                        executor.execute(item, src.name());
 
                         boolean ok = retryDb(() -> src.markDelivered(tx, item.id));
                         if (!ok) throw new RuntimeException("MarkDelivered returned false (concurrent update?)");
