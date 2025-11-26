@@ -31,7 +31,6 @@ public final class Dispatcher {
     private Semaphore parallelism;
     private RateLimiter rateLimiter;
 
-    // cfg
     private volatile long intervalMs;
     private volatile int batchSize;
     private volatile int dbMaxRetries;
@@ -44,7 +43,6 @@ public final class Dispatcher {
     private final AtomicLong delivered = new AtomicLong();
     private final AtomicLong failed = new AtomicLong();
 
-    // per-item backoff (in-memory)
     private final ConcurrentHashMap<Long, Long> nextAllowedAtMillis = new ConcurrentHashMap<>();
     private final Random random = new Random();
 
@@ -69,7 +67,6 @@ public final class Dispatcher {
         int maxConc = cfg.getInt("polling.maxConcurrentDeliveries", 4);
         this.dbMaxRetries = cfg.getInt("polling.dbMaxRetries", 3);
         this.dbRetryBackoffMs = cfg.getLong("polling.dbRetryBackoffMs", 300L);
-
         this.backoffBaseMs = cfg.getLong("backoff.baseMs", 2000L);
         this.backoffMaxMs = cfg.getLong("backoff.maxMs", 120000L);
         this.backoffJitterMs = cfg.getLong("backoff.jitterMs", 500L);
@@ -127,24 +124,24 @@ public final class Dispatcher {
         for (RewardItem item : batch) {
             long now = System.currentTimeMillis();
             long gate = nextAllowedAtMillis.getOrDefault(item.id, 0L);
-            if (gate > now) continue; // backoff not elapsed yet
+            if (gate > now) continue;
 
             if (!parallelism.tryAcquire()) continue;
-            rateLimiter.acquire(); // protect QPS
+            rateLimiter.acquire();
 
             workers.submit(() -> {
                 try (Connection tx = db.getConnection()) {
                     tx.setAutoCommit(false);
                     try {
-                        // execute reward actions
                         executor.execute(item, src.name());
 
                         boolean ok = retryDb(() -> src.markDelivered(tx, item.id));
-                        if (!ok) throw new RuntimeException("MarkDelivered returned false (concurrent update?)");
+                        if (!ok) throw new RuntimeException("MarkDelivered returned false");
 
                         tx.commit();
                         delivered.incrementAndGet();
-                        log.info("[OK] " + src.name() + " id=" + item.id + " order_id=" + item.orderId + " tier=" + item.tier + " nick=" + item.nickname);
+                        log.info("[OK] " + src.name() + " id=" + item.id + " order_id=" + item.orderId +
+                                " tier=" + item.tier + " nick=" + item.nickname);
                         nextAllowedAtMillis.remove(item.id);
                     } catch (Exception ex) {
                         try { tx.rollback(); } catch (Exception ignore) {}
@@ -183,7 +180,7 @@ public final class Dispatcher {
         long prev = nextAllowedAtMillis.getOrDefault(id, 0L);
         long waited = Math.max(0, prev - now);
         long next = (waited == 0 ? backoffBaseMs : Math.min(backoffMaxMs, waited * 2));
-        long jitter = (backoffJitterMs > 0) ? (long)(random.nextDouble() * (backoffJitterMs + 1)) : 0;
+        long jitter = (backoffJitterMs > 0) ? (long) (random.nextDouble() * (backoffJitterMs + 1)) : 0;
         return Math.min(backoffMaxMs, next + jitter);
     }
 

@@ -10,6 +10,7 @@ import su.primecorp.primerewards.core.Dispatcher;
 import su.primecorp.primerewards.core.RewardExecutor;
 import su.primecorp.primerewards.core.RewardSource;
 import su.primecorp.primerewards.mysql.DbPool;
+import su.primecorp.primerewards.sources.HotMcVoteRewardSource;
 import su.primecorp.primerewards.sources.OrdersRewardSource;
 import su.primecorp.primerewards.sources.TelegramSubscriptionRewardSource;
 import su.primecorp.primerewards.util.SafeConfig;
@@ -22,57 +23,60 @@ import java.util.logging.Level;
 
 public final class PrimeRewardsApproverPlugin extends JavaPlugin {
 
-    private DbPool dbOrders;
-    private DbPool dbTelegram;
+    private DbPool db;
     private Dispatcher dispatcher;
     private RewardExecutor executor;
+
     private FileConfiguration tgConfig;
+    private FileConfiguration votesConfig;
+
     private final AtomicBoolean started = new AtomicBoolean(false);
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        // создаём tg_rewards.yml при первом запуске
         saveResource("tg_rewards.yml", false);
+        saveResource("votes_rewards.yml", false);
+
         this.tgConfig = YamlConfiguration.loadConfiguration(new File(getDataFolder(), "tg_rewards.yml"));
+        this.votesConfig = YamlConfiguration.loadConfiguration(new File(getDataFolder(), "votes_rewards.yml"));
 
         SafeConfig cfg = new SafeConfig(getConfig());
         SafeConfig tgCfg = new SafeConfig(tgConfig);
+        SafeConfig votesCfg = new SafeConfig(votesConfig);
+
         setupLogging(cfg);
 
         try {
-            this.dbOrders = new DbPool(cfg);
+            this.db = new DbPool(cfg); // одна БД external_data для всех источников
         } catch (Exception e) {
-            getLogger().log(Level.SEVERE, "Failed to init ORDERS DB pool", e);
+            getLogger().log(Level.SEVERE, "Failed to init DB pool", e);
             Bukkit.getPluginManager().disablePlugin(this);
             return;
         }
 
-        boolean tgEnabled = tgCfg.getConfig().getBoolean("enabled", true);
-        if (tgEnabled) {
-            try {
-                this.dbTelegram = new DbPool(new SafeConfig(tgConfig));
-            } catch (Exception e) {
-                getLogger().log(Level.SEVERE, "Failed to init TELEGRAM DB pool", e);
-                // телегу можно отключить, чтобы не падать всем плагином
-                this.dbTelegram = null;
-            }
-        }
-
-        this.executor = new RewardExecutor(this, cfg, tgCfg);
+        this.executor = new RewardExecutor(this, cfg, tgCfg, votesCfg);
 
         List<RewardSource> sources = new ArrayList<>();
-        sources.add(new OrdersRewardSource(dbOrders, cfg, getLogger()));
-        if (tgEnabled && dbTelegram != null) {
-            sources.add(new TelegramSubscriptionRewardSource(dbTelegram, tgCfg, getLogger()));
+        sources.add(new OrdersRewardSource(db, cfg, getLogger()));
+
+        boolean tgEnabled = tgCfg.getConfig().getBoolean("enabled", true);
+        if (tgEnabled) {
+            sources.add(new TelegramSubscriptionRewardSource(db, tgCfg, getLogger()));
         }
 
-        this.dispatcher = new Dispatcher(this, cfg, executor, sources, getLogger(), dbOrders /* не используется конкретным источником, но передаём */);
+        boolean votesEnabled = votesCfg.getConfig().getBoolean("enabled", true);
+        if (votesEnabled) {
+            sources.add(new HotMcVoteRewardSource(db, votesCfg, getLogger()));
+        }
+
+        this.dispatcher = new Dispatcher(this, cfg, executor, sources, getLogger(), db);
         this.dispatcher.start();
         started.set(true);
 
         getLogger().info("PrimeRewardsApprover enabled. Sources: orders"
-                + ((tgEnabled && dbTelegram != null) ? ", telegram" : ""));
+                + (tgEnabled ? ", telegram" : "")
+                + (votesEnabled ? ", votes" : ""));
     }
 
     @Override
@@ -80,8 +84,7 @@ public final class PrimeRewardsApproverPlugin extends JavaPlugin {
         if (started.compareAndSet(true, false)) {
             getLogger().info("Stopping dispatcher (safe shutdown)...");
             if (dispatcher != null) dispatcher.stopAndWait();
-            if (dbOrders != null) dbOrders.close();
-            if (dbTelegram != null) dbTelegram.close();
+            if (db != null) db.close();
         }
         getLogger().info("PrimeRewardsApprover disabled.");
     }
@@ -112,10 +115,15 @@ public final class PrimeRewardsApproverPlugin extends JavaPlugin {
                 }
                 reloadConfig();
                 this.tgConfig = YamlConfiguration.loadConfiguration(new File(getDataFolder(), "tg_rewards.yml"));
+                this.votesConfig = YamlConfiguration.loadConfiguration(new File(getDataFolder(), "votes_rewards.yml"));
+
                 SafeConfig cfg = new SafeConfig(getConfig());
                 SafeConfig tgCfg = new SafeConfig(tgConfig);
-                executor.reload(cfg, tgCfg);
+                SafeConfig votesCfg = new SafeConfig(votesConfig);
+
+                executor.reload(cfg, tgCfg, votesCfg);
                 dispatcher.reload(cfg);
+
                 sender.sendMessage("§aКонфиг перезагружен.");
             }
             case "stats" -> sender.sendMessage(dispatcher.dumpStats());

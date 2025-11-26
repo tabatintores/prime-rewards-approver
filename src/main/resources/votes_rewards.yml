@@ -1,0 +1,34 @@
+enabled: true
+
+# DB используется та же, что и в основноеи config.yml (external_data),
+# тут мы настраиваем только команды и таблицу.
+polling:
+  batchSize: 50
+
+# Все голоса с этого источника идут одним tier
+defaultTier: "hotmc_vote"
+
+tiers:
+  hotmc_vote:
+    - "playerpoints give ${nickname} 10"
+
+table:
+  name: "external_data.vote_hotmc"
+
+  # Готово к выдаче: ещё не выдано
+  readyWhere: "delivered_at IS NULL"
+
+  # В порядке даты голосования
+  orderBy: "voted_at ASC, id ASC"
+
+  columns:
+    id: "id"
+    nickname: "nickname"
+    # tier/amount/currency опциональны, можно не создавать такие поля
+    tier: ""
+    amount: ""
+    currency: ""
+    delivered_at: "delivered_at"
+    delivery_attempts: "delivery_attempts"
+    delivery_note: "delivery_note"
+    ordered_at: "voted_at"
