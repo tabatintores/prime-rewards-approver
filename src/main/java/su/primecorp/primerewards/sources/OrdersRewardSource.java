@@ -23,7 +23,7 @@ public final class OrdersRewardSource implements RewardSource {
     @Override
     public List<RewardItem> fetchPending(int batchSize) throws Exception {
         String sql =
-                "SELECT id, order_id, nickname, tier, amount, currency, status, delivered_at, delivery_attempts, paid_at, unitpay_id, is_test " +
+                "SELECT id, order_id, nickname, tier, grant_qty, amount, currency, status, delivered_at, delivery_attempts, paid_at, unitpay_id, is_test " +
                         "FROM external_data.orders " +
                         "WHERE status='paid' AND delivered_at IS NULL " +
                         "ORDER BY paid_at ASC " +
@@ -46,6 +46,9 @@ public final class OrdersRewardSource implements RewardSource {
                     attrs.put("unitpay_id", safe(rs.getString("unitpay_id")));
                     attrs.put("is_test", rs.getObject("is_test"));
                     attrs.put("attempts", rs.getInt("delivery_attempts"));
+                    Integer grantQty = rs.getObject("grant_qty", Integer.class);
+                    attrs.put("grant_qty", grantQty == null ? 0 : grantQty);
+
 
                     list.add(new RewardItem(id, orderId, nick, tier, amount, currency, attrs));
                 }
