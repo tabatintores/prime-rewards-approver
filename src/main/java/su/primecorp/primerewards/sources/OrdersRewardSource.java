@@ -11,10 +11,12 @@ import java.util.*;
 public final class OrdersRewardSource implements RewardSource {
     private final DbPool db;
     private final java.util.logging.Logger log;
+    private final String table;
 
     public OrdersRewardSource(DbPool db, SafeConfig cfg, java.util.logging.Logger log) {
         this.db = db;
         this.log = log;
+        this.table = cfg.getString("table", "external_data.orders");
     }
 
     @Override
@@ -24,7 +26,7 @@ public final class OrdersRewardSource implements RewardSource {
     public List<RewardItem> fetchPending(int batchSize) throws Exception {
         String sql =
                 "SELECT id, order_id, nickname, tier, grant_qty, amount, currency, status, delivered_at, delivery_attempts, paid_at, unitpay_id, is_test " +
-                        "FROM external_data.orders " +
+                        "FROM " + table + " " +
                         "WHERE status='paid' AND delivered_at IS NULL " +
                         "ORDER BY paid_at ASC " +
                         "LIMIT ?";
@@ -60,7 +62,7 @@ public final class OrdersRewardSource implements RewardSource {
     @Override
     public boolean markDelivered(Connection txConn, long id) throws Exception {
         String sql =
-                "UPDATE external_data.orders " +
+                "UPDATE " + table + " " +
                         "SET delivered_at = NOW(), delivery_attempts = delivery_attempts + 1, delivery_note = 'ok' " +
                         "WHERE id = ? AND delivered_at IS NULL";
         try (PreparedStatement ps = txConn.prepareStatement(sql)) {
@@ -73,7 +75,7 @@ public final class OrdersRewardSource implements RewardSource {
     @Override
     public boolean markFailed(Connection txConn, long id, String reason) throws Exception {
         String sql =
-                "UPDATE external_data.orders " +
+                "UPDATE " + table + " " +
                         "SET delivery_attempts = delivery_attempts + 1, delivery_note = ? " +
                         "WHERE id = ? AND delivered_at IS NULL";
         try (PreparedStatement ps = txConn.prepareStatement(sql)) {
