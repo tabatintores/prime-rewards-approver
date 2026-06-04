@@ -18,7 +18,7 @@ repositories {
 }
 
 dependencies {
-    compileOnly("io.papermc.paper:paper-api:1.21.8-R0.1-SNAPSHOT") // лучше совпадать с сервером
+    compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT") // лучше совпадать с сервером
     implementation("com.zaxxer:HikariCP:5.1.0")
     implementation("org.slf4j:slf4j-api:2.0.16")
     implementation("mysql:mysql-connector-java:8.0.33")

@@ -1,7 +1,6 @@
 package su.primecorp.primerewards.core;
 
 import org.bukkit.Bukkit;
-import org.bukkit.command.ConsoleCommandSender;
 import org.bukkit.plugin.Plugin;
 import su.primecorp.primerewards.util.SafeConfig;
 import su.primecorp.primerewards.util.TemplateEngine;
@@ -17,9 +16,6 @@ public final class RewardExecutor {
 
     // sourceName -> (tier -> commands)
     private final Map<String, Map<String, List<String>>> actionsBySource = new ConcurrentHashMap<>();
-
-    // простая защита от дублей в рамках одного процесса
-    private final Set<String> executedKeys = ConcurrentHashMap.newKeySet();
 
     private static final long COMMAND_TIMEOUT_SECONDS = 15;
 
@@ -73,16 +69,9 @@ public final class RewardExecutor {
             item.attrs.forEach((k, v) -> ctx.putIfAbsent(k, v == null ? "" : String.valueOf(v)));
         }
 
-        String idempotencyKey = src + "#" + item.id;
-        if (!executedKeys.add(idempotencyKey)) {
-            logger.fine("Skip duplicate execute in-process: " + idempotencyKey);
-            return;
-        }
-
-        ConsoleCommandSender console = Bukkit.getServer().getConsoleSender();
         for (String raw : actions) {
             String cmd = TemplateEngine.apply(raw, ctx);
-            boolean ok = runOnMainThread(() -> Bukkit.dispatchCommand(console, cmd));
+            boolean ok = runOnMainThread(() -> Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd));
             if (!ok) {
                 throw new RuntimeException("Command failed to dispatch: " + cmd);
             }

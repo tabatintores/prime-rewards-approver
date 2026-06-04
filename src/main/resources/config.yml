@@ -2,10 +2,14 @@ mysql:
   jdbcUrl: "jdbc:mysql://127.0.0.1:3306/external_data?useSSL=false&serverTimezone=UTC&characterEncoding=utf8"
   username: "user"
   password: "pass"
-  minimumIdle: 1
-  maximumPoolSize: 5
+  minimumIdle: 0
+  maximumPoolSize: 2
   connectionTimeoutMs: 5000
   validationTimeoutMs: 3000
+
+# Таблица заказов для этого сервера.
+# Для другого режима можно указать, например: "external_data.orders_anarchy"
+table: "external_data.orders"
 
 polling:
   intervalMs: 3000          # как часто опрашивать каждый источник
@@ -26,9 +30,11 @@ logging:
   level: "INFO"             # INFO|DEBUG
 
 # Маппинг tier -> список консольных команд.
-# Доступны плейсхолдеры: ${nickname}, ${amount}, ${currency}, ${order_id}, ${tier}, ${id}
+# Доступны плейсхолдеры: ${nickname}, ${amount}, ${currency}, ${order_id}, ${tier}, ${id}, ${grant_qty}
 # Команды выполняются от имени консоли строго по порядку.
 tiers:
+  500stars:
+    - "points give ${nickname} ${grant_qty}"
   bronze:
     - "eco give ${nickname} 100"
     - "lp user ${nickname} parent addtemp donor_bronze 30d"

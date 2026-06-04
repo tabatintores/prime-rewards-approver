@@ -4,8 +4,8 @@ mysql:
   jdbcUrl: "jdbc:mysql://127.0.0.1:3306/external_data?useSSL=false&serverTimezone=UTC&characterEncoding=utf8"
   username: "user"
   password: "pass"
-  minimumIdle: 1
-  maximumPoolSize: 3
+  minimumIdle: 0
+  maximumPoolSize: 2
   connectionTimeoutMs: 5000
   validationTimeoutMs: 3000
 

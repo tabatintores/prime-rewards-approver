@@ -8,6 +8,7 @@ import su.primecorp.primerewards.util.SafeConfig;
 import java.sql.Connection;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -43,7 +44,8 @@ public final class Dispatcher {
     private final AtomicLong delivered = new AtomicLong();
     private final AtomicLong failed = new AtomicLong();
 
-    private final ConcurrentHashMap<Long, Long> nextAllowedAtMillis = new ConcurrentHashMap<>();
+    private final Set<String> inProgress = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<String, Long> nextAllowedAtMillis = new ConcurrentHashMap<>();
     private final Random random = new Random();
 
     public Dispatcher(Plugin plugin, SafeConfig cfg, RewardExecutor executor,
@@ -122,50 +124,59 @@ public final class Dispatcher {
         if (batch.isEmpty()) return;
 
         for (RewardItem item : batch) {
+            String itemKey = src.name() + "#" + item.id;
             long now = System.currentTimeMillis();
-            long gate = nextAllowedAtMillis.getOrDefault(item.id, 0L);
+            long gate = nextAllowedAtMillis.getOrDefault(itemKey, 0L);
             if (gate > now) continue;
 
-            if (!parallelism.tryAcquire()) continue;
+            if (!inProgress.add(itemKey)) continue;
+            if (!parallelism.tryAcquire()) {
+                inProgress.remove(itemKey);
+                continue;
+            }
             rateLimiter.acquire();
 
-            workers.submit(() -> {
-                try (Connection tx = db.getConnection()) {
-                    tx.setAutoCommit(false);
+            try {
+                workers.submit(() -> {
                     try {
                         executor.execute(item, src.name());
 
-                        boolean ok = retryDb(() -> src.markDelivered(tx, item.id));
-                        if (!ok) throw new RuntimeException("MarkDelivered returned false");
+                        try (Connection tx = db.getConnection()) {
+                            tx.setAutoCommit(false);
+                            boolean ok = retryDb(() -> src.markDelivered(tx, item.id));
+                            if (!ok) throw new RuntimeException("MarkDelivered returned false");
 
-                        tx.commit();
+                            tx.commit();
+                        }
+
                         delivered.incrementAndGet();
                         log.info("[OK] " + src.name() + " id=" + item.id + " order_id=" + item.orderId +
                                 " tier=" + item.tier + " nick=" + item.nickname);
-                        nextAllowedAtMillis.remove(item.id);
-                    } catch (Exception ex) {
-                        try { tx.rollback(); } catch (Exception ignore) {}
-
-                        long delay = computeNextBackoff(item.id);
-                        nextAllowedAtMillis.put(item.id, System.currentTimeMillis() + delay);
+                        nextAllowedAtMillis.remove(itemKey);
+                    } catch (Exception outer) {
+                        long delay = computeNextBackoff(itemKey);
+                        nextAllowedAtMillis.put(itemKey, System.currentTimeMillis() + delay);
 
                         try (Connection tx2 = db.getConnection()) {
                             tx2.setAutoCommit(false);
-                            String reason = trimReason(ex.getMessage());
+                            String reason = trimReason(outer.getMessage());
                             boolean marked = retryDb(() -> src.markFailed(tx2, item.id, reason));
                             if (marked) tx2.commit(); else tx2.rollback();
                         } catch (Exception dbEx) {
-                            log.warning("markFailed error for id=" + item.id + ": " + dbEx.getMessage());
+                            log.warning("markFailed error for " + itemKey + ": " + dbEx.getMessage());
                         }
                         failed.incrementAndGet();
-                        log.warning("[FAIL] " + src.name() + " id=" + item.id + " " + ex.getMessage());
+                        log.warning("[FAIL] " + src.name() + " id=" + item.id + " " + outer.getMessage());
+                    } finally {
+                        inProgress.remove(itemKey);
+                        parallelism.release();
                     }
-                } catch (Exception outer) {
-                    log.warning("Worker fatal for id=" + item.id + ": " + outer.getMessage());
-                } finally {
-                    parallelism.release();
-                }
-            });
+                });
+            } catch (RejectedExecutionException ex) {
+                inProgress.remove(itemKey);
+                parallelism.release();
+                log.warning("Worker submit rejected for " + itemKey + ": " + ex.getMessage());
+            }
         }
     }
 
@@ -175,9 +186,9 @@ public final class Dispatcher {
         return msg.length() > 240 ? msg.substring(0, 240) : msg;
     }
 
-    private long computeNextBackoff(long id) {
+    private long computeNextBackoff(String key) {
         long now = System.currentTimeMillis();
-        long prev = nextAllowedAtMillis.getOrDefault(id, 0L);
+        long prev = nextAllowedAtMillis.getOrDefault(key, 0L);
         long waited = Math.max(0, prev - now);
         long next = (waited == 0 ? backoffBaseMs : Math.min(backoffMaxMs, waited * 2));
         long jitter = (backoffJitterMs > 0) ? (long) (random.nextDouble() * (backoffJitterMs + 1)) : 0;
