@@ -22,7 +22,7 @@ public final class RewardItem {
         this.tier = tier;
         this.amount = amount;
         this.currency = currency;
-        this.attrs = attrs;
+        this.attrs = attrs == null ? Map.of() : java.util.Collections.unmodifiableMap(new java.util.HashMap<>(attrs));
     }
 
     public String getAttrAsString(String key) {

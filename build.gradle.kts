@@ -19,6 +19,7 @@ repositories {
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT") // лучше совпадать с сервером
+    testImplementation("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT") // Только для ручных проверок контрактов.
     implementation("com.zaxxer:HikariCP:5.1.0")
     implementation("org.slf4j:slf4j-api:2.0.16")
     implementation("mysql:mysql-connector-java:8.0.33")
@@ -40,4 +41,13 @@ tasks.jar {
 
 tasks.build {
     dependsOn(tasks.shadowJar)
+}
+
+// Запускается только явно; обычная сборка не подключается к тестовой БД.
+tasks.register<JavaExec>("checkOrdersMysql") {
+    group = "verification"
+    description = "Проверить контракты и конкуренцию в новой пустой локальной тестовой MySQL БД"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("su.primecorp.primerewards.OrdersMysqlChecks")
 }

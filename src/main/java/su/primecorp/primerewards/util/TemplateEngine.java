@@ -8,6 +8,18 @@ import java.util.regex.Pattern;
 public final class TemplateEngine {
     private static final Pattern P = Pattern.compile("\\$\\{([a-zA-Z0-9_\\-]+)}");
 
+    public static String applyStrict(String tpl, Map<String, String> ctx) {
+        Matcher matcher = P.matcher(tpl);
+        while (matcher.find()) {
+            if (!ctx.containsKey(matcher.group(1))) {
+                throw new IllegalArgumentException("Неизвестный плейсхолдер команды: " + matcher.group(1));
+            }
+        }
+        String result = apply(tpl, ctx);
+        if (result.contains("$" + "{")) throw new IllegalArgumentException("Некорректный плейсхолдер команды.");
+        return result;
+    }
+
     public static String apply(String tpl, Map<String, String> ctx) {
         if (tpl == null || ctx == null) return tpl;
         Matcher m = P.matcher(tpl);

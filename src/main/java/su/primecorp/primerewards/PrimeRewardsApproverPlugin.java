@@ -3,9 +3,11 @@ package su.primecorp.primerewards;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
-import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
+import su.primecorp.primerewards.config.ConfigFiles;
+import su.primecorp.primerewards.config.OrdersConfig;
 import su.primecorp.primerewards.core.Dispatcher;
 import su.primecorp.primerewards.core.RewardExecutor;
 import su.primecorp.primerewards.core.RewardSource;
@@ -14,120 +16,208 @@ import su.primecorp.primerewards.sources.HotMcVoteRewardSource;
 import su.primecorp.primerewards.sources.OrdersRewardSource;
 import su.primecorp.primerewards.sources.TelegramSubscriptionRewardSource;
 import su.primecorp.primerewards.util.SafeConfig;
+import su.primecorp.primerewards.util.TextService;
 
-import java.io.File;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public final class PrimeRewardsApproverPlugin extends JavaPlugin {
-
     private DbPool db;
     private Dispatcher dispatcher;
     private RewardExecutor executor;
-
-    private FileConfiguration tgConfig;
-    private FileConfiguration votesConfig;
-
-    private final AtomicBoolean started = new AtomicBoolean(false);
+    private ExecutorService lifecycleIo;
+    private BukkitTask lifecyclePump;
+    private CompletableFuture<ConfigFiles> loading;
+    private CompletableFuture<DbPool> connecting;
+    private SafeConfig mainConfig, tgConfig, votesConfig;
+    private OrdersConfig ordersConfig;
+    private CommandSender reloadSender;
+    private Path configDirectory;
+    private Logger log;
+    private boolean changing;
+    private TextService text = new TextService(Map.of());
 
     @Override
     public void onEnable() {
-        saveDefaultConfig();
-        saveResource("tg_rewards.yml", false);
-        saveResource("votes_rewards.yml", false);
+        log = getLogger();
+        configDirectory = getDataFolder().toPath();
+        lifecycleIo = Executors.newSingleThreadExecutor(task -> {
+            Thread thread = new Thread(task, "PrimeRewards-Lifecycle");
+            thread.setDaemon(true);
+            return thread;
+        });
+        // Async-потоки публикуют только результаты; Bukkit проверяет их короткой sync-задачей.
+        lifecyclePump = Bukkit.getScheduler().runTaskTimer(this, this::advanceLifecycle, 1L, 1L);
+        beginReload(null);
+    }
 
-        this.tgConfig = YamlConfiguration.loadConfiguration(new File(getDataFolder(), "tg_rewards.yml"));
-        this.votesConfig = YamlConfiguration.loadConfiguration(new File(getDataFolder(), "votes_rewards.yml"));
+    private void beginReload(CommandSender sender) {
+        changing = true;
+        reloadSender = sender;
+        if (dispatcher != null) dispatcher.stop();
+        Dispatcher previousDispatcher = dispatcher;
+        DbPool previousDb = db;
+        Path directory = configDirectory;
+        loading = CompletableFuture.supplyAsync(() -> {
+            try {
+                if (previousDispatcher != null && !previousDispatcher.awaitStopped(30)) {
+                    throw new IllegalStateException("Старые работы ещё не завершены.");
+                }
+                if (previousDb != null) previousDb.close();
+                return ConfigFiles.read(directory);
+            } catch (Exception failure) {
+                throw new CompletionException(failure);
+            }
+        }, lifecycleIo);
+    }
 
-        SafeConfig cfg = new SafeConfig(getConfig());
-        SafeConfig tgCfg = new SafeConfig(tgConfig);
-        SafeConfig votesCfg = new SafeConfig(votesConfig);
-
-        setupLogging(cfg);
-
+    private void advanceLifecycle() {
         try {
-            this.db = new DbPool(cfg); // одна БД external_data для всех источников
-        } catch (Exception e) {
-            getLogger().log(Level.SEVERE, "Failed to init DB pool", e);
-            Bukkit.getPluginManager().disablePlugin(this);
-            return;
+            if (loading != null && loading.isDone()) {
+                ConfigFiles files = loading.join();
+                loading = null;
+                // Небольшие YAML-конфиги разбираются sync; всё чтение уже завершено async.
+                mainConfig = parse(files.main());
+                tgConfig = parse(files.telegram());
+                votesConfig = parse(files.votes());
+                setupLogging(mainConfig);
+                Map<String, String> messages = new HashMap<>();
+                var section = mainConfig.getConfig().getConfigurationSection("messages");
+                if (section != null) {
+                    for (String key : section.getKeys(false)) messages.put(key, section.getString(key, ""));
+                }
+                text = new TextService(messages);
+                try {
+                    ordersConfig = OrdersConfig.load(mainConfig, log);
+                } catch (IllegalArgumentException invalidOrders) {
+                    ordersConfig = null;
+                    log.severe("Источник заказов отключён: " + invalidOrders.getMessage());
+                }
+                DbPool.Settings settings = DbPool.Settings.from(mainConfig);
+                connecting = CompletableFuture.supplyAsync(() -> new DbPool(settings), lifecycleIo);
+            }
+            if (connecting != null && connecting.isDone()) {
+                db = connecting.join();
+                connecting = null;
+                startSources();
+                changing = false;
+                if (reloadSender != null) {
+                    if (ordersConfig == null) {
+                        text.send(reloadSender, "orders-disabled", "<red>Источник заказов отключён из-за ошибки настройки. Подробности в консоли.");
+                    } else {
+                        text.send(reloadSender, "reload-success", "<green>Конфигурация перезагружена.");
+                    }
+                    reloadSender = null;
+                }
+            }
+        } catch (Exception failure) {
+            loading = null;
+            connecting = null;
+            changing = false;
+            log.severe("Запуск/перезагрузка не завершены; выдача остановлена. " + Dispatcher.safeFailure(unwrap(failure)));
+            if (dispatcher != null) dispatcher.stop();
+            if (executor != null) executor.stop();
+            if (reloadSender != null) {
+                text.send(reloadSender, "reload-failed", "<red>Не удалось перезагрузить конфигурацию. Подробности в консоли.");
+                reloadSender = null;
+            }
         }
+    }
 
-        this.executor = new RewardExecutor(this, cfg, tgCfg, votesCfg);
-
+    private void startSources() {
         List<RewardSource> sources = new ArrayList<>();
-        sources.add(new OrdersRewardSource(db, cfg, getLogger()));
-
-        boolean tgEnabled = tgCfg.getConfig().getBoolean("enabled", true);
-        if (tgEnabled) {
-            sources.add(new TelegramSubscriptionRewardSource(db, tgCfg, getLogger()));
+        if (ordersConfig != null) {
+            sources.add(new OrdersRewardSource(db, ordersConfig));
+            log.info("Заказы: server=" + ordersConfig.server() + " table=" + ordersConfig.table()
+                    + " workerId=" + ordersConfig.workerId());
         }
-
-        boolean votesEnabled = votesCfg.getConfig().getBoolean("enabled", true);
-        if (votesEnabled) {
-            sources.add(new HotMcVoteRewardSource(db, votesCfg, getLogger()));
+        if (tgConfig.getConfig().getBoolean("enabled", true)) {
+            sources.add(new TelegramSubscriptionRewardSource(db, tgConfig, log));
         }
+        if (votesConfig.getConfig().getBoolean("enabled", true)) {
+            sources.add(new HotMcVoteRewardSource(db, votesConfig, log));
+        }
+        executor = new RewardExecutor(this, mainConfig, tgConfig, votesConfig, ordersConfig);
+        dispatcher = new Dispatcher(mainConfig, executor, sources, log, db);
+        dispatcher.start();
+        log.info("PrimeRewardsApprover запущен. Источники: " + sources.stream().map(RewardSource::name).toList());
+    }
 
-        this.dispatcher = new Dispatcher(this, cfg, executor, sources, getLogger(), db);
-        this.dispatcher.start();
-        started.set(true);
+    private static SafeConfig parse(String content) throws Exception {
+        YamlConfiguration yaml = new YamlConfiguration();
+        // Без defaults из JAR: новый orders.server не должен незаметно включать legacy-конфиг.
+        yaml.loadFromString(content);
+        return new SafeConfig(yaml);
+    }
 
-        getLogger().info("PrimeRewardsApprover enabled. Sources: orders"
-                + (tgEnabled ? ", telegram" : "")
-                + (votesEnabled ? ", votes" : ""));
+    private static Throwable unwrap(Throwable failure) {
+        while (failure instanceof CompletionException && failure.getCause() != null) failure = failure.getCause();
+        return failure;
     }
 
     @Override
     public void onDisable() {
-        if (started.compareAndSet(true, false)) {
-            getLogger().info("Stopping dispatcher (safe shutdown)...");
-            if (dispatcher != null) dispatcher.stopAndWait();
-            if (db != null) db.close();
+        if (lifecyclePump != null) lifecyclePump.cancel();
+        if (dispatcher != null) dispatcher.stop();
+        if (executor != null) executor.stop();
+        Dispatcher previousDispatcher = dispatcher;
+        DbPool previousDb = db;
+        CompletableFuture<DbPool> pendingPool = connecting;
+        Logger logger = log;
+        if (lifecycleIo != null) {
+            lifecycleIo.execute(() -> {
+                try {
+                    if (previousDispatcher != null && !previousDispatcher.awaitStopped(30)) {
+                        logger.warning("Ожидание БД при остановке истекло. Заказы с резервом требуют ручной сверки.");
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    logger.warning("Ожидание остановки прервано; проверьте зарезервированные заказы.");
+                } finally {
+                    if (previousDb != null) previousDb.close();
+                    if (pendingPool != null) {
+                        // Задача создания пула находится раньше в той же последовательной очереди.
+                        try { pendingPool.join().close(); }
+                        catch (CompletionException failure) { logger.warning("Создание ожидающего пула БД завершилось ошибкой."); }
+                    }
+                }
+            });
+            lifecycleIo.shutdown();
         }
-        getLogger().info("PrimeRewardsApprover disabled.");
+        if (log != null) log.info("PrimeRewardsApprover остановлен; завершение операций БД выполняется асинхронно.");
     }
 
     private void setupLogging(SafeConfig cfg) {
-        String level = cfg.getString("logging.level", "INFO").toUpperCase();
-        Level l = switch (level) {
-            case "DEBUG" -> Level.FINE;
-            case "INFO" -> Level.INFO;
-            default -> Level.INFO;
-        };
-        getLogger().setLevel(l);
+        log.setLevel("DEBUG".equalsIgnoreCase(cfg.getString("logging.level", "INFO")) ? Level.FINE : Level.INFO);
     }
 
     @Override
-    public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
-        if (!cmd.getName().equalsIgnoreCase("primerewards")) return false;
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (!command.getName().equalsIgnoreCase("primerewards")) return false;
         if (args.length == 0) {
-            sender.sendMessage("§e/primerewards reload §7— перезагрузить конфиг");
-            sender.sendMessage("§e/primerewards stats  §7— показать метрики");
+            text.send(sender, "usage", "<yellow>/primerewards reload <gray>— перезагрузить конфиг; <yellow>/primerewards stats <gray>— метрики.");
             return true;
         }
-        switch (args[0].toLowerCase()) {
+        switch (args[0].toLowerCase(Locale.ROOT)) {
             case "reload" -> {
                 if (!sender.hasPermission("primerewards.reload")) {
-                    sender.sendMessage("§cНедостаточно прав.");
-                    return true;
+                    text.send(sender, "no-permission", "<red>Недостаточно прав.");
+                } else if (changing) {
+                    text.send(sender, "reload-busy", "<yellow>Загрузка или остановка предыдущих работ ещё выполняется.");
+                } else {
+                    text.send(sender, "reload-started", "<yellow>Выдача остановлена. Ожидаем завершения работ и загружаем настройки.");
+                    beginReload(sender);
                 }
-                reloadConfig();
-                this.tgConfig = YamlConfiguration.loadConfiguration(new File(getDataFolder(), "tg_rewards.yml"));
-                this.votesConfig = YamlConfiguration.loadConfiguration(new File(getDataFolder(), "votes_rewards.yml"));
-
-                SafeConfig cfg = new SafeConfig(getConfig());
-                SafeConfig tgCfg = new SafeConfig(tgConfig);
-                SafeConfig votesCfg = new SafeConfig(votesConfig);
-
-                executor.reload(cfg, tgCfg, votesCfg);
-                dispatcher.reload(cfg);
-
-                sender.sendMessage("§aКонфиг перезагружен.");
             }
-            case "stats" -> sender.sendMessage(dispatcher.dumpStats());
-            default -> sender.sendMessage("§cНеизвестная подкоманда.");
+            case "stats" -> {
+                if (dispatcher == null || changing || !dispatcher.isRunning()) {
+                    text.send(sender, "not-ready", "<yellow>Выдача ещё не запущена или перезагружается.");
+                } else sender.sendMessage(TextService.parse(dispatcher.dumpStats()));
+            }
+            default -> text.send(sender, "unknown-command", "<red>Неизвестная подкоманда.");
         }
         return true;
     }

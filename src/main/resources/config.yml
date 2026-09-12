@@ -6,41 +6,77 @@ mysql:
   maximumPoolSize: 2
   connectionTimeoutMs: 5000
   validationTimeoutMs: 3000
+  socket_timeout_ms: 15000
 
-# Таблица заказов для этого сервера.
-# Для другого режима можно указать, например: "external_data.orders_anarchy"
-table: "external_data.orders"
+orders:
+  # Режим именно этого игрового сервера: survival, duels или minigames.
+  # classic — алиас survival; hard оставлен только для архивной таблицы orders.
+  # Пустое значение отключает источник заказов до явной настройки.
+  server: ""
+  # Уникальное имя экземпляра; например survival-1, duels-1, minigames-1.
+  workerId: "change-me-1"
+  query_timeout_seconds: 10
+
+  # Проверять онлайн до резерва и повторно перед командой.
+  # Отключайте только если команды этого сервера поддерживают офлайн-выдачу.
+  requiresOnline: true
+
+# Команды покупок только ЭТОГО сервера, выбранного в orders.server.
+# Пример для MiniGames. На Survival/Duels укажите свои действующие команды.
+# БД берётся из JDBC; table/schema вручную задавать не нужно.
+tiers:
+  coins_10:
+    - "money give ${nickname} ${grant_qty}"
+  coins_50:
+    - "money give ${nickname} ${grant_qty}"
+  coins_100:
+    - "money give ${nickname} ${grant_qty}"
+  coins_500:
+    - "money give ${nickname} ${grant_qty}"
+  coins_1000:
+    - "money give ${nickname} ${grant_qty}"
+  coins_5000:
+    - "money give ${nickname} ${grant_qty}"
+
+# Доступны прежние плейсхолдеры: ${nickname}, ${amount}, ${currency},
+# ${order_id}, ${tier}, ${id}, ${grant_qty}, ${paid_at}, ${unitpay_id}, ${attempts}.
+# Дополнительно: ${server}, ${quantity}, ${product_title}.
+# grant_qty — готовая итоговая выдача из заказа. Не умножайте её на quantity!
+# Для старых таблиц quantity=1 — техническое значение; число пакетов там не сохранено.
+# Команды выполняются от консоли, последовательно; начальный / удаляется.
+# Не более 16 команд на награду. Неизвестный tier остаётся невыданным.
+# Токены shop_orders не снимаются автоматически даже после таймаута/перезапуска.
 
 polling:
-  intervalMs: 3000          # как часто опрашивать каждый источник
-  batchSize: 50             # размер порции SELECT ... LIMIT
-  maxConcurrentDeliveries: 4 # общий лимит параллельных выдач (Semaphore)
-  dbMaxRetries: 3           # ретраи SQL-операций
-  dbRetryBackoffMs: 300     # базовый backoff на ошибки БД
+  intervalMs: 3000           # Интервал опроса источников; минимум 250 мс.
+  batchSize: 50              # Размер SELECT; допустимо 1–500.
+  maxConcurrentDeliveries: 4 # Общий предел работ; допустимо 1–32.
+  dbMaxRetries: 3            # Повторы записи результата БД; без повтора команд.
+  dbRetryBackoffMs: 300      # Задержка SQL-повтора; резерв не повторяется при неопределённом commit.
+
+execution:
+  requests_per_tick: 2       # Малые задачи основного потока: проверка онлайна или до 16 команд.
+  command_timeout_ms: 15000  # Просроченная задача не начнёт выполнение позже.
 
 backoff:
-  baseMs: 2000              # экспоненциальная задержка между повторами (в памяти)
-  maxMs: 120000             # верхний предел
-  jitterMs: 500             # случайный джиттер, чтобы избежать «стада»
+  baseMs: 2000
+  maxMs: 120000
+  jitterMs: 500
 
 rateLimit:
-  qps: 20                   # общий QPS на выдачи (защита от шторма)
+  qps: 20                   # Общая частота выдач.
 
 logging:
-  level: "INFO"             # INFO|DEBUG
+  level: "INFO"             # INFO или DEBUG; команды и токены не выводятся.
 
-# Маппинг tier -> список консольных команд.
-# Доступны плейсхолдеры: ${nickname}, ${amount}, ${currency}, ${order_id}, ${tier}, ${id}, ${grant_qty}
-# Команды выполняются от имени консоли строго по порядку.
-tiers:
-  500stars:
-    - "points give ${nickname} ${grant_qty}"
-  bronze:
-    - "eco give ${nickname} 100"
-    - "lp user ${nickname} parent addtemp donor_bronze 30d"
-  silver:
-    - "eco give ${nickname} 250"
-    - "lp user ${nickname} parent addtemp donor_silver 60d"
-  gold:
-    - "eco give ${nickname} 600"
-    - "lp user ${nickname} parent addtemp donor_gold 90d"
+# Поддерживаются MiniMessage и старые &-цвета.
+messages:
+  no-permission: "<red>Недостаточно прав."
+  usage: "<yellow>/primerewards reload <gray>— перезагрузить конфиг; <yellow>/primerewards stats <gray>— метрики."
+  unknown-command: "<red>Неизвестная подкоманда."
+  reload-started: "<yellow>Выдача остановлена. Ожидаем завершения работ и загружаем настройки."
+  reload-busy: "<yellow>Загрузка или остановка предыдущих работ ещё выполняется."
+  reload-success: "<green>Конфигурация перезагружена."
+  reload-failed: "<red>Не удалось перезагрузить конфигурацию. Подробности в консоли."
+  orders-disabled: "<red>Источник заказов отключён из-за ошибки настройки. Подробности в консоли."
+  not-ready: "<yellow>Выдача ещё не запущена или перезагружается."

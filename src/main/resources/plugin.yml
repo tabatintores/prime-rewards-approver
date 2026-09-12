@@ -4,12 +4,12 @@ version: 1.0.0
 api-version: '1.21'
 authors: [PRIMECORP]
 website: https://primecorp.su
-description: Issue rewards from external sources (donations, subscriptions) via MySQL with idempotent delivery.
+description: Выдача покупок по режимам, наград за голосования и подписки через MySQL.
 permissions:
   primerewards.reload:
     default: op
 commands:
   primerewards:
-    description: PrimeRewardsApprover control
+    description: Управление PrimeRewardsApprover
     usage: /<command> reload|stats
     aliases: [prewards, rewardsapprover]
