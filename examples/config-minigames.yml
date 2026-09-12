@@ -1,3 +1,5 @@
+# Пример MiniGames для единой shop_orders; устанавливать в согласованный момент переключения.
+# Укажите действующие данные MySQL непосредственно на сервере.
 mysql:
   jdbcUrl: "jdbc:mysql://127.0.0.1:3306/external_data?useSSL=false&serverTimezone=UTC&characterEncoding=utf8"
   username: "user"
@@ -14,9 +16,9 @@ orders:
   # Все три режима читают shop_orders. Старые таблицы заказов не поддерживаются.
   # Включайте новый источник вместе с новым backend после согласованного переноса истории.
   # Пустое значение отключает источник заказов до явной настройки.
-  server: ""
+  server: minigames
   # Уникальное имя экземпляра; например survival-1, duels-1, minigames-1.
-  workerId: "change-me-1"
+  workerId: minigames-1
   query_timeout_seconds: 10
 
   # Проверять онлайн до резерва и повторно перед командой.

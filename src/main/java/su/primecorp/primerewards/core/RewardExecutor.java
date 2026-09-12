@@ -22,7 +22,7 @@ public final class RewardExecutor {
     private final int requestsPerTick;
     private final long timeoutMs;
 
-    public record PreparedReward(List<String> commands, String nickname, boolean requiresOnline) {}
+    public record PreparedReward(List<String> commands, String nickname, boolean requiresOnline, String server) {}
 
     public static final class DeliveryException extends Exception {
         public DeliveryException(String message) { super(message); }
@@ -32,7 +32,7 @@ public final class RewardExecutor {
                           OrdersConfig orders) {
         this.orders = orders;
         this.actionsBySource = Map.of(
-                "orders", orders == null ? Map.of() : loadActions(ordersCfg, orders.actionsPath()),
+                "orders", orders == null ? Map.of() : loadActions(ordersCfg, "tiers"),
                 "telegram", loadActions(tgCfg, "tiers"),
                 "votes", loadActions(votesCfg, "tiers"));
         this.requestsPerTick = Math.max(1, Math.min(8, ordersCfg.getInt("execution.requests_per_tick", 2)));
@@ -55,26 +55,42 @@ public final class RewardExecutor {
     public PreparedReward prepare(RewardItem item, String sourceName) throws Exception {
         ensureActive();
         boolean order = "orders".equals(sourceName);
-        if (order) {
-            if (orders == null || !orders.server().equals(item.getAttrAsString("server"))) {
+        if (order && orders == null) throw new DeliveryException("Источник заказов отключён.");
+        String tierKey = item.tier == null ? "" : item.tier.toLowerCase(Locale.ROOT);
+        List<String> actions = actionsBySource.getOrDefault(sourceName, Map.of()).get(tierKey);
+        List<String> commands = prepareCommands(item, actions, order ? orders : null);
+        PreparedReward prepared = new PreparedReward(commands, item.nickname, order && orders.requiresOnline(),
+                order ? item.getAttrAsString("server") : null);
+        if (prepared.requiresOnline()) {
+            onMain(allowed -> {
+                checkAllowed(allowed);
+                checkOnline(prepared);
+                return null;
+            });
+        }
+        return prepared;
+    }
+
+    /** Чистая подготовка команд по снимку; null orderConfig используется для голосов и Telegram. */
+    public static List<String> prepareCommands(RewardItem item, List<String> actions, OrdersConfig orderConfig)
+            throws DeliveryException {
+        if (orderConfig != null) {
+            if (!orderConfig.server().equals(item.getAttrAsString("server"))) {
                 throw new DeliveryException("Режим заказа не совпадает с режимом источника.");
             }
             if (item.nickname == null || !item.nickname.matches("[A-Za-z0-9_]{3,16}")) {
                 throw new DeliveryException("Недопустимый ник в заказе.");
             }
-            if (orders.multiserver()) {
-                if (item.orderId == null || !item.orderId.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")) {
-                    throw new DeliveryException("Некорректный UUID заказа.");
-                }
-                if (Long.parseLong(item.getAttrAsString("quantity")) < 1) {
-                    throw new DeliveryException("Некорректное число пакетов в заказе.");
-                }
+            if (item.orderId == null || !item.orderId.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")) {
+                throw new DeliveryException("Некорректный UUID заказа.");
+            }
+            Object quantity = item.attrs.get("quantity");
+            if (quantity != null && (!(quantity instanceof Number count) || count.longValue() < 1)) {
+                throw new DeliveryException("Некорректное число пакетов в заказе.");
             }
         }
-        String tierKey = item.tier == null ? "" : item.tier.toLowerCase(Locale.ROOT);
-        List<String> actions = actionsBySource.getOrDefault(sourceName, Map.of()).get(tierKey);
         if (actions == null || actions.isEmpty()) {
-            String safeTier = tierKey.replaceAll("[^a-z0-9_-]", "?");
+            String safeTier = (item.tier == null ? "" : item.tier.toLowerCase(Locale.ROOT)).replaceAll("[^a-z0-9_-]", "?");
             throw new DeliveryException("Нет команд для tier=" + safeTier.substring(0, Math.min(64, safeTier.length())) + "; заказ не выдан.");
         }
         if (actions.size() > 16) throw new DeliveryException("На одну награду допускается не более 16 команд.");
@@ -86,19 +102,20 @@ public final class RewardExecutor {
         ctx.put("tier", item.tier);
         ctx.put("amount", String.valueOf(item.amount));
         ctx.put("currency", item.currency == null ? "" : item.currency);
-        item.attrs.forEach((key, value) -> ctx.putIfAbsent(key, value == null ? "" : String.valueOf(value)));
+        item.attrs.forEach((key, value) -> ctx.putIfAbsent(key,
+                value == null ? (orderConfig == null ? "" : null) : String.valueOf(value)));
 
         List<String> commands = new ArrayList<>();
         for (String raw : actions) {
             if (raw.isBlank() || raw.indexOf('\n') >= 0 || raw.indexOf('\r') >= 0) {
                 throw new DeliveryException("Пустая или многострочная команда в настройках.");
             }
-            if (order && raw.contains("${grant_qty}") && Long.parseLong(item.getAttrAsString("grant_qty")) <= 0) {
+            if (orderConfig != null && raw.contains("${grant_qty}") && Long.parseLong(item.getAttrAsString("grant_qty")) <= 0) {
                 throw new DeliveryException("Для команды валюты или ключей нужен положительный сохранённый grant_qty.");
             }
             String command;
             try {
-                command = (order ? TemplateEngine.applyStrict(raw, ctx) : TemplateEngine.apply(raw, ctx)).trim();
+                command = (orderConfig != null ? TemplateEngine.applyStrict(raw, ctx) : TemplateEngine.apply(raw, ctx)).trim();
             } catch (IllegalArgumentException invalidTemplate) {
                 throw new DeliveryException(invalidTemplate.getMessage());
             }
@@ -106,20 +123,15 @@ public final class RewardExecutor {
             if (command.isBlank()) throw new DeliveryException("Пустая команда после подстановки.");
             commands.add(command);
         }
-        PreparedReward prepared = new PreparedReward(List.copyOf(commands), item.nickname, order && orders.requiresOnline());
-        if (prepared.requiresOnline()) {
-            onMain(allowed -> {
-                checkAllowed(allowed);
-                checkOnline(prepared);
-                return null;
-            });
-        }
-        return prepared;
+        return List.copyOf(commands);
     }
 
     /** Вызывается воркером только после подтверждённого commit резервирования. */
     public void execute(PreparedReward reward) throws Exception {
         onMain(allowed -> {
+            if (reward.server() != null && (orders == null || !orders.server().equals(reward.server()))) {
+                throw new DeliveryException("Режим подготовленного заказа не совпадает с исполнителем.");
+            }
             for (String command : reward.commands()) {
                 checkAllowed(allowed);
                 checkOnline(reward);

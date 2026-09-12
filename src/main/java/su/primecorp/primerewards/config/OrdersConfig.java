@@ -9,11 +9,11 @@ import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Неизменяемый контракт источника; имя БД берётся только из JDBC. */
-public record OrdersConfig(String server, String table, String workerId, boolean multiserver,
-                           String actionsPath, boolean requiresOnline, int queryTimeoutSeconds) {
+/** Неизменяемый контракт источника; все режимы используют shop_orders в БД из JDBC. */
+public record OrdersConfig(String server, String table, String workerId,
+                           boolean requiresOnline, int queryTimeoutSeconds) {
     private static final Pattern JDBC = Pattern.compile("^jdbc:mysql://[^/]+/([A-Za-z0-9_]{1,64})(?:\\?.*)?$");
-    private static final Pattern TABLE = Pattern.compile("([A-Za-z0-9_]{1,64})\\.(orders_anarchy|orders|shop_orders)");
+    private static final Pattern OLD_TABLE = Pattern.compile("(?:[A-Za-z0-9_]{1,64}\\.)?(orders_anarchy|orders)");
 
     public static OrdersConfig load(SafeConfig cfg, Logger log) {
         FileConfiguration yaml = cfg.getConfig();
@@ -22,47 +22,29 @@ public record OrdersConfig(String server, String table, String workerId, boolean
             throw new IllegalArgumentException("Для заказов нужен JDBC URL вида jdbc:mysql://host:port/database с явным именем БД.");
         }
         String database = jdbc.group(1);
-        boolean legacy = !yaml.contains("orders", true);
-        String server;
-        if (legacy) {
-            String oldTable = explicitTable(yaml, "table", database);
-            server = switch (oldTable) {
-                case "orders_anarchy" -> "classic";
-                case "orders" -> "hard";
-                default -> throw new IllegalArgumentException("Без orders.server разрешены только старые таблицы orders_anarchy/orders; shop_orders требует фильтра режима.");
-            };
-            log.warning("Старый конфиг заказов: задайте orders.server и orders.workerId; существующий tiers можно оставить. Режим=" + server);
-        } else {
-            if (!yaml.isConfigurationSection("orders") || !yaml.contains("orders.server", true)) {
-                throw new IllegalArgumentException("В секции orders обязательно явно задайте orders.server.");
-            }
-            String configured = cfg.getString("orders.server", "").trim().toLowerCase(Locale.ROOT);
-            server = switch (configured) {
-                case "survival", "classic" -> "classic";
-                case "duels", "minigames", "hard" -> configured;
-                default -> throw new IllegalArgumentException("Пустой или неизвестный orders.server. Допустимы survival (classic), duels, minigames; hard — архивный режим.");
-            };
-        }
-        String tableName = switch (server) {
-            case "classic" -> "orders_anarchy";
-            case "hard" -> "orders";
-            default -> "shop_orders";
-        };
+        // Старое имя проверяем даже при отсутствии orders.server, чтобы явно объяснить переход.
         for (String path : new String[]{"table", "orders.table"}) {
-            if (yaml.contains(path, true) && !explicitTable(yaml, path, database).equals(tableName)) {
-                throw new IllegalArgumentException(path + " конфликтует с orders.server=" + server + "; ожидается " + database + "." + tableName);
-            }
+            if (yaml.contains(path, true)) validateTable(yaml, path, database);
         }
-        boolean scoped = tableName.equals("shop_orders");
+        if (!yaml.isConfigurationSection("orders") || !yaml.contains("orders.server", true)) {
+            throw new IllegalArgumentException("Обязательно задайте orders.server: survival, duels или minigames. Старые таблицы заказов больше не читаются.");
+        }
+        String configured = cfg.getString("orders.server", "").trim().toLowerCase(Locale.ROOT);
+        String server = switch (configured) {
+            case "survival", "classic" -> "survival";
+            case "duels", "minigames" -> configured;
+            default -> throw new IllegalArgumentException("Пустой или неизвестный orders.server. Допустимы survival, duels, minigames; Hard больше не поддерживается.");
+        };
+        if (configured.equals("classic")) {
+            log.warning("orders.server=classic нормализован в survival. В shop_orders читается только server=survival.");
+        }
         String worker = cfg.getString("orders.workerId", server + "-" + UUID.randomUUID()).trim();
         if (!worker.matches("[A-Za-z0-9_.:-]{1,128}")) {
             throw new IllegalArgumentException("orders.workerId должен содержать 1–128 символов: латиница, цифры, _, ., :, -.");
         }
-        // Один экземпляр обслуживает один режим и использует только свой корневой tiers.
-        String path = "tiers";
-        boolean online = yaml.getBoolean("orders.requiresOnline", scoped);
+        boolean online = yaml.getBoolean("orders.requiresOnline", true);
         int timeout = Math.max(1, Math.min(60, cfg.getInt("orders.query_timeout_seconds", 10)));
-        return new OrdersConfig(server, database + "." + tableName, worker, scoped, path, online, timeout);
+        return new OrdersConfig(server, database + ".shop_orders", worker, online, timeout);
     }
 
     public String sqlTable() {
@@ -70,12 +52,14 @@ public record OrdersConfig(String server, String table, String workerId, boolean
         return "`" + parts[0] + "`.`" + parts[1] + "`";
     }
 
-    private static String explicitTable(FileConfiguration yaml, String path, String database) {
+    private static void validateTable(FileConfiguration yaml, String path, String database) {
         Object value = yaml.get(path);
-        Matcher match = TABLE.matcher(value instanceof String text ? text.trim() : "");
-        if (!match.matches() || !match.group(1).equals(database)) {
-            throw new IllegalArgumentException(path + " должен иметь вид <БД из JDBC>.orders_anarchy/orders/shop_orders. Произвольный SQL и другая БД запрещены.");
+        String table = value instanceof String text ? text.trim() : "";
+        if (OLD_TABLE.matcher(table).matches()) {
+            throw new IllegalArgumentException(path + " указывает старую таблицу заказов. Сначала согласованно перенесите историю Survival в shop_orders с сохранением order_id и delivered_at, затем удалите эту настройку и включите новый backend вместе с новым плагином.");
         }
-        return match.group(2);
+        if (!table.equals("shop_orders") && !table.equals(database + ".shop_orders")) {
+            throw new IllegalArgumentException(path + " допускает только shop_orders в БД из JDBC. Другая таблица, схема или произвольный SQL запрещены; ручной выбор таблицы не нужен.");
+        }
     }
 }

@@ -1,3 +1,5 @@
+# Пример Duels для единой shop_orders; устанавливать в согласованный момент переключения.
+# Укажите действующие данные MySQL непосредственно на сервере.
 mysql:
   jdbcUrl: "jdbc:mysql://127.0.0.1:3306/external_data?useSSL=false&serverTimezone=UTC&characterEncoding=utf8"
   username: "user"
@@ -14,9 +16,9 @@ orders:
   # Все три режима читают shop_orders. Старые таблицы заказов не поддерживаются.
   # Включайте новый источник вместе с новым backend после согласованного переноса истории.
   # Пустое значение отключает источник заказов до явной настройки.
-  server: ""
+  server: duels
   # Уникальное имя экземпляра; например survival-1, duels-1, minigames-1.
-  workerId: "change-me-1"
+  workerId: duels-1
   query_timeout_seconds: 10
 
   # Проверять онлайн до резерва и повторно перед командой.
@@ -24,22 +26,10 @@ orders:
   requiresOnline: true
 
 # Команды покупок только ЭТОГО сервера, выбранного в orders.server.
-# Пример для MiniGames. На Survival/Duels укажите свои действующие команды.
+# Укажите реальные команды Duels. Пока tiers пустой, заказы ожидают настройки.
 # БД берётся из JDBC; таблица всегда shop_orders. Настройка table не нужна.
 # Сохраняйте команды старых tier для уже созданных/оплаченных заказов.
-tiers:
-  coins_10:
-    - "money give ${nickname} ${grant_qty}"
-  coins_50:
-    - "money give ${nickname} ${grant_qty}"
-  coins_100:
-    - "money give ${nickname} ${grant_qty}"
-  coins_500:
-    - "money give ${nickname} ${grant_qty}"
-  coins_1000:
-    - "money give ${nickname} ${grant_qty}"
-  coins_5000:
-    - "money give ${nickname} ${grant_qty}"
+tiers: {}
 
 # Доступны прежние плейсхолдеры: ${nickname}, ${amount}, ${currency},
 # ${order_id}, ${tier}, ${id}, ${grant_qty}, ${paid_at}, ${unitpay_id}, ${attempts}.

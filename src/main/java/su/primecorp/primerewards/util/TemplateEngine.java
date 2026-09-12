@@ -14,6 +14,9 @@ public final class TemplateEngine {
             if (!ctx.containsKey(matcher.group(1))) {
                 throw new IllegalArgumentException("Неизвестный плейсхолдер команды: " + matcher.group(1));
             }
+            if (ctx.get(matcher.group(1)) == null) {
+                throw new IllegalArgumentException("В заказе не сохранено значение плейсхолдера: " + matcher.group(1));
+            }
         }
         String result = apply(tpl, ctx);
         if (result.contains("$" + "{")) throw new IllegalArgumentException("Некорректный плейсхолдер команды.");

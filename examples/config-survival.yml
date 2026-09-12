@@ -1,10 +1,12 @@
+# Подготовленный пример Survival. Рабочую выдачу переключать только после согласованной миграции.
+# Укажите действующие данные MySQL непосредственно на сервере; пример содержит заглушки.
 mysql:
   jdbcUrl: "jdbc:mysql://127.0.0.1:3306/external_data?useSSL=false&serverTimezone=UTC&characterEncoding=utf8"
   username: "user"
   password: "pass"
   minimumIdle: 0
   maximumPoolSize: 2
-  connectionTimeoutMs: 5000
+  connectionTimeoutMs: 8000
   validationTimeoutMs: 3000
   socket_timeout_ms: 15000
 
@@ -14,32 +16,56 @@ orders:
   # Все три режима читают shop_orders. Старые таблицы заказов не поддерживаются.
   # Включайте новый источник вместе с новым backend после согласованного переноса истории.
   # Пустое значение отключает источник заказов до явной настройки.
-  server: ""
+  server: survival
   # Уникальное имя экземпляра; например survival-1, duels-1, minigames-1.
-  workerId: "change-me-1"
+  workerId: survival-1
   query_timeout_seconds: 10
 
   # Проверять онлайн до резерва и повторно перед командой.
   # Отключайте только если команды этого сервера поддерживают офлайн-выдачу.
-  requiresOnline: true
+  requiresOnline: false
 
 # Команды покупок только ЭТОГО сервера, выбранного в orders.server.
-# Пример для MiniGames. На Survival/Duels укажите свои действующие команды.
+# Команды Survival из действующего конфига, включая исторические tier.
 # БД берётся из JDBC; таблица всегда shop_orders. Настройка table не нужна.
 # Сохраняйте команды старых tier для уже созданных/оплаченных заказов.
 tiers:
-  coins_10:
-    - "money give ${nickname} ${grant_qty}"
-  coins_50:
-    - "money give ${nickname} ${grant_qty}"
-  coins_100:
-    - "money give ${nickname} ${grant_qty}"
-  coins_500:
-    - "money give ${nickname} ${grant_qty}"
-  coins_1000:
-    - "money give ${nickname} ${grant_qty}"
-  coins_5000:
-    - "money give ${nickname} ${grant_qty}"
+  silver:
+    - "givedonate ${nickname} silver {#adb5bd>}sɪʟ{#ffffff<>}ᴠᴇʀ{#adb5bd<}"
+  gold:
+    - "givedonate ${nickname} gold {#ff7b00>}ɢᴏʟᴅ{#ffaa00<}"
+  deluxe:
+    - "givedonate ${nickname} deluxe {#a9f76a>}ᴅᴇʟᴜxᴇ{#35dbbd<}"
+  legend:
+    - "givedonate ${nickname} legend {#d53af4>}ʟᴇɢ{#e83ab9<>}ᴇɴᴅ{#b54edb<}"
+  prime:
+    - "givedonate ${nickname} prime {#fe5f75>}ᴘʀɪᴍᴇ{#fc9840<}"
+  luxury:
+    - "givedonate ${nickname} luxury {#f1a7f1>}ʟᴜx{#fad0c4<>}ᴜʀʏ{#e8a0c8<}"
+  premier:
+    - "givedonate ${nickname} premier {#b9ccff>}ᴘʀᴇ{#eef3ff<>}ᴍɪᴇʀ{#d6deff<}"
+  president:
+    - "givedonate ${nickname} president {#b43724>}ᴘʀᴇs{#ff4603<>}ɪᴅᴇɴᴛ{#d94432<}"
+  key_season:
+    - "giveskeys ${nickname} ${grant_qty}"
+  key_monthly:
+    - "givemkeys ${nickname} ${grant_qty}"
+  key_67:
+    - "givekeys ${nickname} key_67 ${grant_qty}"
+    - "broadcastdonate ${nickname} &#ADD6ED${grant_qty} x {#c90d0d>}&lКлюч 67{#fc5800<}"
+  5000btc:
+    - "points give ${nickname} ${grant_qty}"
+    - "broadcastdonate ${nickname} &#F7931A${grant_qty} ₿"
+  17500btc:
+    - "points give ${nickname} ${grant_qty}"
+    - "broadcastdonate ${nickname} &#F7931A${grant_qty} ₿"
+  30000btc:
+    - "points give ${nickname} ${grant_qty}"
+    - "broadcastdonate ${nickname} &#F7931A${grant_qty} ₿"
+  unban:
+    - "dnpardon ${nickname}"
+  test:
+    - "cmsg ${nickname} &fТестовый платёж!"
 
 # Доступны прежние плейсхолдеры: ${nickname}, ${amount}, ${currency},
 # ${order_id}, ${tier}, ${id}, ${grant_qty}, ${paid_at}, ${unitpay_id}, ${attempts}.
@@ -52,7 +78,7 @@ tiers:
 # Токены shop_orders не снимаются автоматически даже после таймаута/перезапуска.
 
 polling:
-  intervalMs: 3000           # Интервал опроса источников; минимум 250 мс.
+  intervalMs: 10000           # Интервал опроса источников; минимум 250 мс.
   batchSize: 50              # Размер SELECT; допустимо 1–500.
   maxConcurrentDeliveries: 4 # Общий предел работ; допустимо 1–32.
   dbMaxRetries: 3            # Повторы записи результата БД; без повтора команд.
