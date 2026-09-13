@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 /** Конфигурация неизменяема. Только drain/stop вызываются в основном потоке. */
-public final class RewardExecutor {
+public final class RewardExecutor implements RewardDelivery {
     private final Map<String, Map<String, List<String>>> actionsBySource;
     private final OrdersConfig orders;
     private final BlockingQueue<MainRequest<?>> mainQueue = new ArrayBlockingQueue<>(64);

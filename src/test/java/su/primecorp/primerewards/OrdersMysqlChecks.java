@@ -37,11 +37,12 @@ public final class OrdersMysqlChecks {
         try (DbPool db = new DbPool(DbPool.Settings.from(base))) {
             createFixtures(db);
             checkSources(db, url);
+            OrdersQueueChecks.run(db, url);
         }
         System.out.println("Проверки стандартных и новых режимов, перенесённых заказов, команд и конкуренции пройдены. Фикстуры оставлены в тестовой БД.");
     }
 
-    private static SafeConfig config(String url, String server, String table) {
+    static SafeConfig config(String url, String server, String table) {
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.set("mysql.jdbcUrl", url);
         if (server != null) {
@@ -121,7 +122,7 @@ public final class OrdersMysqlChecks {
         }
     }
 
-    private static String insert(DbPool db, String server, String tier, Integer quantity, int grant,
+    static String insert(DbPool db, String server, String tier, Integer quantity, int grant,
                                  String status, int test, boolean delivered, boolean claimed) throws Exception {
         String id = UUID.randomUUID().toString();
         String sql = "INSERT INTO shop_orders"
@@ -330,11 +331,11 @@ public final class OrdersMysqlChecks {
         }
     }
 
-    private static OrdersRewardSource source(DbPool db, String url, String mode) {
+    static OrdersRewardSource source(DbPool db, String url, String mode) {
         return new OrdersRewardSource(db, OrdersConfig.load(config(url, mode, null), LOG));
     }
 
-    private static RewardItem row(DbPool db, String orderId) throws Exception {
+    static RewardItem row(DbPool db, String orderId) throws Exception {
         try (Connection c = db.getConnection(); PreparedStatement ps = c.prepareStatement("SELECT * FROM shop_orders WHERE order_id=?")) {
             ps.setString(1, orderId);
             try (ResultSet rs = ps.executeQuery()) {
@@ -360,7 +361,7 @@ public final class OrdersMysqlChecks {
         }
     }
 
-    private static String snapshot(DbPool db, long exceptId) throws Exception {
+    static String snapshot(DbPool db, long exceptId) throws Exception {
         return snapshot(db, "SELECT * FROM shop_orders WHERE id <> ? ORDER BY id", exceptId);
     }
 
@@ -395,7 +396,7 @@ public final class OrdersMysqlChecks {
         }
     }
 
-    private static void check(boolean condition, String name) {
+    static void check(boolean condition, String name) {
         if (!condition) throw new AssertionError(name);
     }
 }

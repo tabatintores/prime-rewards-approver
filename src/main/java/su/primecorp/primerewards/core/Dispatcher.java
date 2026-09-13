@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Logger;
 
 public final class Dispatcher {
-    private final RewardExecutor executor;
+    private final RewardDelivery executor;
     private final List<RewardSource> sources;
     private final DbPool db;
     private final Logger log;
@@ -34,7 +34,7 @@ public final class Dispatcher {
 
     private record Backoff(long until, long delay) {}
 
-    public Dispatcher(SafeConfig cfg, RewardExecutor executor, List<RewardSource> sources, Logger log, DbPool db) {
+    public Dispatcher(SafeConfig cfg, RewardDelivery executor, List<RewardSource> sources, Logger log, DbPool db) {
         this.executor = executor;
         this.sources = List.copyOf(sources);
         this.db = db;
@@ -100,7 +100,11 @@ public final class Dispatcher {
     private void processSource(RewardSource source) {
         List<RewardItem> batch;
         try {
-            batch = source.fetchPending(batchSize);
+            // Курсор заказов продвигается при чтении. Не теряем хвост страницы из-за занятых воркеров.
+            // Единственный поток опроса забирает разрешения; воркеры могут только освобождать их.
+            int limit = source.requiresClaim() ? Math.min(batchSize, parallelism.availablePermits()) : batchSize;
+            if (limit == 0) return;
+            batch = source.fetchPending(limit);
         } catch (Exception failure) {
             warn("fetch#" + source.name(), "Не удалось прочитать источник " + source.description() + ": " + safeFailure(failure));
             return;

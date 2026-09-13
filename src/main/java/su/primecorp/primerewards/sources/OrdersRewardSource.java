@@ -6,12 +6,18 @@ import su.primecorp.primerewards.core.RewardSource;
 import su.primecorp.primerewards.mysql.DbPool;
 
 import java.sql.*;
+import java.time.LocalDateTime;
 import java.util.*;
 
 public final class OrdersRewardSource implements RewardSource {
     private static final String ELIGIBLE = "status = 'paid' AND is_test = 0 AND delivered_at IS NULL";
     private final DbPool db;
     private final OrdersConfig config;
+    // Только состояние обхода этого экземпляра; новый источник после reload начинает с начала.
+    private Long sweepMaxId;
+    private Position after;
+
+    private record Position(LocalDateTime paidAt, long id) {}
 
     public OrdersRewardSource(DbPool db, OrdersConfig config) {
         this.db = db;
@@ -30,36 +36,74 @@ public final class OrdersRewardSource implements RewardSource {
                 + " order_id=" + safeLog(item.orderId) + " workerId=" + config.workerId();
     }
 
+    /** Только async: одна страница за опрос, ещё один короткий запрос при начале обхода. */
     @Override
-    public List<RewardItem> fetchPending(int batchSize) throws Exception {
+    public synchronized List<RewardItem> fetchPending(int batchSize) throws Exception {
+        int limit = Math.max(1, Math.min(500, batchSize));
+        String seek = after == null ? "" : after.paidAt() == null
+                ? " AND ((paid_at IS NULL AND id > ?) OR paid_at IS NOT NULL)"
+                : " AND (paid_at > ? OR (paid_at = ? AND id > ?))";
         String sql = "SELECT id, order_id, nickname, tier, grant_qty, amount, currency, delivery_attempts, paid_at, unitpay_id, is_test,"
                 + " server, quantity, product_title, delivery_claim_token, delivery_claimed_at, delivery_worker"
                 + " FROM " + config.sqlTable() + " WHERE " + ELIGIBLE
-                + " AND server = ? AND delivery_claim_token IS NULL"
-                + " ORDER BY paid_at ASC, id ASC LIMIT ?";
+                + " AND server = ? AND delivery_claim_token IS NULL AND id <= ?"
+                + seek + " ORDER BY paid_at ASC, id ASC LIMIT ?";
         List<RewardItem> list = new ArrayList<>();
-        try (Connection c = db.getConnection(); PreparedStatement ps = statement(c, sql)) {
-            ps.setString(1, config.server());
-            ps.setInt(2, Math.max(1, Math.min(500, batchSize)));
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    Map<String, Object> attrs = new HashMap<>();
-                    attrs.put("server", rs.getString("server"));
-                    // У перенесённых заказов этих снимков может не быть. Не подставляем 0/1 или tier.
-                    attrs.put("quantity", rs.getObject("quantity", Long.class));
-                    attrs.put("product_title", rs.getString("product_title"));
-                    attrs.put("paid_at", safe(rs.getTimestamp("paid_at")));
-                    attrs.put("unitpay_id", safe(rs.getString("unitpay_id")));
-                    attrs.put("is_test", rs.getObject("is_test"));
-                    attrs.put("attempts", rs.getInt("delivery_attempts"));
-                    attrs.put("grant_qty", rs.getLong("grant_qty"));
-                    attrs.put("delivery_claim_token", safe(rs.getString("delivery_claim_token")));
-                    attrs.put("delivery_claimed_at", safe(rs.getTimestamp("delivery_claimed_at")));
-                    attrs.put("delivery_worker", safe(rs.getString("delivery_worker")));
-                    list.add(new RewardItem(rs.getLong("id"), rs.getString("order_id"), rs.getString("nickname"),
-                            rs.getString("tier"), rs.getDouble("amount"), safe(rs.getString("currency")), attrs));
+        Long ceiling = sweepMaxId;
+        Position last = after;
+        try (Connection c = db.getConnection()) {
+            if (ceiling == null) {
+                // MAX по первичному ключу — только граница вставок, не выбор чужих наград.
+                // Новые AUTO_INCREMENT id попадут в следующий конечный обход.
+                try (PreparedStatement ps = statement(c, "SELECT MAX(id) FROM " + config.sqlTable());
+                     ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) throw new SQLException("Не получена граница обхода заказов.");
+                    ceiling = rs.getLong(1); // NULL для пустой таблицы даёт границу 0.
                 }
             }
+            try (PreparedStatement ps = statement(c, sql)) {
+                int index = 1;
+                ps.setString(index++, config.server());
+                ps.setLong(index++, ceiling);
+                if (after != null) {
+                    if (after.paidAt() != null) {
+                        ps.setObject(index++, after.paidAt());
+                        ps.setObject(index++, after.paidAt());
+                    }
+                    ps.setLong(index++, after.id());
+                }
+                ps.setInt(index, limit);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        Map<String, Object> attrs = new HashMap<>();
+                        attrs.put("server", rs.getString("server"));
+                        // У перенесённых заказов этих снимков может не быть. Не подставляем 0/1 или tier.
+                        attrs.put("quantity", rs.getObject("quantity", Long.class));
+                        attrs.put("product_title", rs.getString("product_title"));
+                        attrs.put("paid_at", safe(rs.getTimestamp("paid_at")));
+                        attrs.put("unitpay_id", safe(rs.getString("unitpay_id")));
+                        attrs.put("is_test", rs.getObject("is_test"));
+                        attrs.put("attempts", rs.getInt("delivery_attempts"));
+                        attrs.put("grant_qty", rs.getLong("grant_qty"));
+                        attrs.put("delivery_claim_token", safe(rs.getString("delivery_claim_token")));
+                        attrs.put("delivery_claimed_at", safe(rs.getTimestamp("delivery_claimed_at")));
+                        attrs.put("delivery_worker", safe(rs.getString("delivery_worker")));
+                        long id = rs.getLong("id");
+                        list.add(new RewardItem(id, rs.getString("order_id"), rs.getString("nickname"),
+                                rs.getString("tier"), rs.getDouble("amount"), safe(rs.getString("currency")), attrs));
+                        // DATETIME без преобразования часового пояса; NULL идёт перед датами в MySQL ASC.
+                        last = new Position(rs.getObject("paid_at", LocalDateTime.class), id);
+                    }
+                }
+            }
+        }
+        // Продвигаемся по прочитанным строкам до prepare/backoff. Ошибка SQL/close не меняет курсор.
+        if (list.size() < limit) {
+            sweepMaxId = null;
+            after = null;
+        } else {
+            sweepMaxId = ceiling;
+            after = last;
         }
         return list;
     }
