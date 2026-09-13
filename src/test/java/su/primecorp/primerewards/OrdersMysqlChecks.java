@@ -23,7 +23,7 @@ import java.util.logging.Logger;
  */
 public final class OrdersMysqlChecks {
     private static final Logger LOG = Logger.getLogger("OrdersMysqlChecks");
-    private static final List<String> MODES = List.of("survival", "duels", "minigames");
+    private static final List<String> MODES = List.of("survival", "duels", "minigames", "skyblock_2");
 
     public static void main(String[] args) throws Exception {
         String url = System.getenv("PRIMEREWARDS_TEST_JDBC");
@@ -38,7 +38,7 @@ public final class OrdersMysqlChecks {
             createFixtures(db);
             checkSources(db, url);
         }
-        System.out.println("Проверки трёх режимов, перенесённых заказов, команд и конкуренции пройдены. Фикстуры оставлены в тестовой БД.");
+        System.out.println("Проверки стандартных и новых режимов, перенесённых заказов, команд и конкуренции пройдены. Фикстуры оставлены в тестовой БД.");
     }
 
     private static SafeConfig config(String url, String server, String table) {
@@ -67,8 +67,15 @@ public final class OrdersMysqlChecks {
         check(OrdersConfig.load(config(url, "classic", null), LOG).server().equals("survival"), "Алиас classic канонизируется");
         reject(config(url, "", null));
         reject(config(url, "   ", null));
-        reject(config(url, "unknown", null));
-        reject(config(url, "hard", null));
+        for (String mode : List.of("unknown", "hard", "new-mode", "a", "a".repeat(32))) {
+            check(OrdersConfig.load(config(url, mode, null), LOG).server().equals(mode), "Нет списка разрешённых имён: " + mode);
+        }
+        SafeConfig normalized = config(url, "skyblock_2", null);
+        normalized.getConfig().set("orders.server", " SKYBLOCK_2 ");
+        check(OrdersConfig.load(normalized, LOG).server().equals("skyblock_2"), "Регистр и внешние пробелы нормализуются");
+        for (String invalid : List.of("a".repeat(33), "sky block", "sky.block", "../sky", "sky' OR 1=1", "выживание")) {
+            reject(config(url, invalid, null));
+        }
         reject(config(url, null, schema + ".orders"));
         reject(config(url, null, schema + ".orders_anarchy"));
         reject(config(url, null, schema + ".shop_orders"));
@@ -143,6 +150,7 @@ public final class OrdersMysqlChecks {
         String miniBigId = insert(db, "minigames", "coins_5000", 3, 18000, "paid", 0, false, false);
         String duelId = insert(db, "duels", "coins_1000", 2, 77, "paid", 0, false, false);
         String survivalId = insert(db, "survival", "coins_1000", null, 9, "paid", 0, false, false);
+        String customId = insert(db, "skyblock_2", "coins_1000", 1, 909, "paid", 0, false, false);
         String historicalPaidId = insert(db, "survival", "retired_paid_tier", null, 4321, "paid", 0, false, false);
         String historicalCreatedId = insert(db, "survival", "retired_created_tier", null, 9876, "created", 0, false, false);
         String historicalDeliveredId = insert(db, "survival", "retired_delivered_tier", null, 1111, "paid", 0, true, false);
@@ -180,6 +188,7 @@ public final class OrdersMysqlChecks {
         check(ids(miniRows).equals(List.of(miniBigId, miniId)), "Фильтры MiniGames и ORDER BY paid_at");
         check(ids(mini.fetchPending(1)).equals(List.of(miniBigId)), "LIMIT после сортировки");
         check(ids(sources.get("duels").fetchPending(50)).equals(List.of(duelId)), "Изоляция Duels");
+        check(ids(sources.get("skyblock_2").fetchPending(50)).equals(List.of(customId)), "Новый режим выбирает только свои заказы");
         check(ids(survival.fetchPending(50)).equals(List.of(survivalId, historicalPaidId)), "Survival и история в общей таблице");
         check(ids(source(db, url, "classic").fetchPending(50)).equals(List.of(survivalId, historicalPaidId)), "Алиас не читает DB server=classic");
         RewardItem historical = row(db, historicalPaidId);
@@ -225,6 +234,7 @@ public final class OrdersMysqlChecks {
         checkClaimRace(db, url, "survival", row(db, survivalId));
         checkClaimRace(db, url, "duels", row(db, duelId));
         checkClaimRace(db, url, "minigames", miniRows.getFirst());
+        checkClaimRace(db, url, "skyblock_2", row(db, customId));
 
         // Завершённая перенесённая запись не выдаётся даже без токена.
         RewardItem alreadyDelivered = row(db, historicalDeliveredId);

@@ -27,14 +27,14 @@ public record OrdersConfig(String server, String table, String workerId,
             if (yaml.contains(path, true)) validateTable(yaml, path, database);
         }
         if (!yaml.isConfigurationSection("orders") || !yaml.contains("orders.server", true)) {
-            throw new IllegalArgumentException("Обязательно задайте orders.server: survival, duels или minigames. Старые таблицы заказов больше не читаются.");
+            throw new IllegalArgumentException("Обязательно задайте orders.server — идентификатор режима из shop_orders. Старые таблицы заказов больше не читаются.");
         }
         String configured = cfg.getString("orders.server", "").trim().toLowerCase(Locale.ROOT);
-        String server = switch (configured) {
-            case "survival", "classic" -> "survival";
-            case "duels", "minigames" -> configured;
-            default -> throw new IllegalArgumentException("Пустой или неизвестный orders.server. Допустимы survival, duels, minigames; Hard больше не поддерживается.");
-        };
+        // Длина соответствует server VARCHAR(32); список названий режимов не ограничивается.
+        if (!configured.matches("[a-z0-9_-]{1,32}")) {
+            throw new IllegalArgumentException("orders.server должен содержать 1–32 символа: латинские буквы, цифры, _ или -. Укажите идентификатор режима из shop_orders.");
+        }
+        String server = configured.equals("classic") ? "survival" : configured;
         if (configured.equals("classic")) {
             log.warning("orders.server=classic нормализован в survival. В shop_orders читается только server=survival.");
         }
